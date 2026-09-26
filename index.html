@@ -74,6 +74,16 @@ button{font-family:inherit}
 .sbtn .nm{flex:1}
 .sbtn .nm small{display:block;font-weight:500;font-size:12px;opacity:.85}
 .sbtn .sst{color:#ffd84a;letter-spacing:1px;font-size:15px}
+.rk{list-style:none;text-align:left;margin:8px 0}
+.rk li{display:flex;gap:10px;align-items:center;padding:5px 12px;border-radius:12px;font-weight:800}
+.rk li:nth-child(odd){background:rgba(80,160,220,.12)}
+.rk li.me{background:linear-gradient(90deg,#fff2a8,#ffd1ea);outline:2px solid #ffc93c}
+.rk .n{width:32px;text-align:center}.rk .nm{flex:1}.rk .sc{font-variant-numeric:tabular-nums}
+.tabs{display:flex;gap:5px;justify-content:center;margin:8px 0}
+.tabs button{width:36px;height:36px;border:none;border-radius:50%;font-weight:800;font-size:15px;background:#dcecf7;color:var(--ink);cursor:pointer}
+.tabs button.on{background:linear-gradient(#ffcf4a,#ff9a3c);box-shadow:0 2px 0 #b8641a}
+#rkEntry{margin:8px 0}#rkEntry input{font:inherit;font-weight:800;width:150px;padding:7px 10px;border-radius:12px;border:2px solid #9cc6e2;text-align:center;margin-right:6px}
+#rkErr{color:#d6386b;font-size:12px;min-height:1em}
 .how{margin:14px auto 0;max-width:520px;background:rgba(255,255,255,.14);border-radius:16px;padding:10px 14px;font-size:13px;line-height:1.7;text-align:left}
 .tools{margin-top:10px;display:flex;gap:8px;justify-content:center}
 #pickOv .pickIn{text-align:center;color:#fff;width:100%}
@@ -126,7 +136,7 @@ button{font-family:inherit}
       ・敵をたくさん倒すと <b>スーパーバブル</b> がたまる（スペースキー）<br>
       ・次のラッシュを早く呼ぶとボーナスパールがもらえるよ
     </div>
-    <div class="tools"><button class="hbtn" id="sndBtn">🔊 効果音 ON</button><button class="hbtn" id="bgmBtn">🎵 BGM ON</button></div>
+    <div class="tools"><button class="hbtn" id="sndBtn">🔊 効果音 ON</button><button class="hbtn" id="bgmBtn">🎵 BGM ON</button><button class="hbtn" id="rankBtn">🏆 ランキング</button></div>
   </div>
 </div>
 <div class="ov" id="pickOv"><div class="pickIn"><h2>スペシャルカード！</h2><div class="hint">1まい えらんでね</div><div class="cards" id="cards"></div></div></div>
@@ -204,6 +214,7 @@ const CARDS=[
 const SAVE_KEY='belugaBubbleTD_v1';
 let save={unlocked:1,stars:[0,0,0,0,0,0,0],sound:true};
 try{const s=JSON.parse(localStorage.getItem(SAVE_KEY));if(s&&Array.isArray(s.stars))save=Object.assign(save,s);}catch(e){}
+if(!Array.isArray(save.best))save.best=[];
 function persist(){try{localStorage.setItem(SAVE_KEY,JSON.stringify(save))}catch(e){}}
 
 // ================= サウンド =================
@@ -706,18 +717,66 @@ function update(dt){
   if(G.wave>=G.total&&!G.spawnQ.length&&!G.enemies.length&&!G.pickQueue&&!G.ultFx&&!G.booms.length)win();
 }
 
+
+// ================= みんなのランキング（Firestore REST） =================
+// ベルーガ防衛戦と同じ Firebase プロジェクトを使い、ステージごとに保存先(コレクション) scores_bbd_s1〜s7 を分ける
+const FB={project:'beluga-defense',key:'AIzaSyClphjTe780WJrcAf0zStK6dUaXun6N18Q'};
+const FS=`https://firestore.googleapis.com/v1/projects/${FB.project}/databases/(default)/documents`;
+const rcol=si=>'scores_bbd_s'+(si+1);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function fetchTop(si){
+  const r=await fetch(`${FS}:runQuery?key=${FB.key}`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({structuredQuery:{from:[{collectionId:rcol(si)}],orderBy:[{field:{fieldPath:'score'},direction:'DESCENDING'}],limit:10}})});
+  if(!r.ok)throw new Error('read '+r.status);
+  return (await r.json()).filter(x=>x.document).map(x=>{const f=x.document.fields;return{name:f.name.stringValue,score:+f.score.integerValue}});
+}
+async function postScore(si,name,score){
+  const r=await fetch(`${FS}/${rcol(si)}?key=${FB.key}`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({fields:{name:{stringValue:name},score:{integerValue:String(score)},stage:{integerValue:String(si+1)},createdAt:{timestampValue:new Date().toISOString()}}})});
+  if(!r.ok)throw new Error('write '+r.status);
+}
+function rankListHtml(list,mine){
+  if(!list.length)return '<p style="opacity:.7">まだ記録がありません。いちばん乗りをめざそう！</p>';
+  let hit=false;
+  return '<ol class="rk">'+list.map((r,i)=>{const me=!hit&&mine&&r.name===mine.name&&r.score===mine.score;if(me)hit=true;
+    return `<li class="${me?'me':''}"><span class="n">${['🥇','🥈','🥉'][i]||i+1}</span><span class="nm">${esc(r.name)}</span><span class="sc">${r.score.toLocaleString()}</span></li>`}).join('')+'</ol>';
+}
+async function showRanking(si){
+  showMsg(`<h2>🏆 みんなのランキング</h2><div class="tabs">${STAGES.map((s,i)=>`<button data-act="rk${i}" class="${i===si?'on':''}">${i+1}</button>`).join('')}</div>
+    <p><b>ST${si+1} ${STAGES[si].name}</b><br><small>水深 ${STAGES[si].depth}${save.best[si]?`　じぶんのベスト ${save.best[si].toLocaleString()}`:''}</small></p><div id="rkBody"><p>よみこみ中…</p></div>
+    <div class="btns"><button class="bbtn" data-act="close" style="background:linear-gradient(#8fa7bb,#607a91);box-shadow:0 4px 0 #3c4f60">とじる</button></div>`);
+  try{const l=await fetchTop(si);if($('rkBody'))$('rkBody').innerHTML=rankListHtml(l)}
+  catch(e){if($('rkBody'))$('rkBody').innerHTML='<p>ランキングを よみこめなかったよ…<br><small>ネットにつながっているか たしかめてね</small></p>'}
+}
+async function submitScore(){
+  const btn=$('rkBtn'),inp=$('rkName');if(!btn||btn.disabled||!G)return;
+  const name=(inp.value.trim().slice(0,8))||'ななし',si=G.si,score=G.score;btn.disabled=true;inp.disabled=true;btn.textContent='送信中…';
+  try{localStorage.setItem('bbd_name',name)}catch(e){}
+  try{
+    await postScore(si,name,score);
+    const l=await fetchTop(si),idx=l.findIndex(r=>r.name===name&&r.score===score);
+    $('rkEntry').innerHTML=idx>=0?`<p><b>🎉 ランキング ${idx+1}位に入ったよ！</b></p>`:'<p><b>とうろくしたよ！</b><small>（トップ10には もうすこし！）</small></p>';
+    $('rkList').innerHTML=rankListHtml(l,{name,score});sfx.combo();
+  }catch(e){btn.disabled=false;inp.disabled=false;btn.textContent='もういちど送る';$('rkErr').textContent='送れなかったよ…通信をたしかめて、もういちど押してね'}
+}
+
 // ================= 勝敗・カード =================
 function win(){
   G.state='win';G.sel=null;G.placing=null;stopMusic();
   const ratio=G.lives/G.maxLives,stars=ratio>=.9?3:ratio>=.5?2:1;
   save.stars[G.si]=Math.max(save.stars[G.si]||0,stars);save.unlocked=Math.max(save.unlocked,Math.min(7,G.si+2));persist();
+  const par=G.total*60;G.score=1000+G.kills*10+G.lives*200+G.maxCombo*30+Math.max(0,Math.round((par-G.time)*4));
+  const isBest=G.score>(save.best[G.si]||0);if(isBest){save.best[G.si]=G.score;persist()}
+  let myName='';try{myName=localStorage.getItem('bbd_name')||''}catch(e){}
   sfx.win();
   for(let i=0;i<12;i++)setTimeout(()=>{if(G&&G.state==='win'){const x=rand(100,W-100),y=rand(80,H-120);burst(x,y,['#ffd84a','#ff8fc8','#5fd3ff','#6fe39a'][i%4],30,'star',300,5);ring(x,y,80,'#fff',.5,4);sfx.pop()}},i*120);
   const last=G.si===STAGES.length-1;
   setTimeout(()=>showMsg(`<h2>${last?'🎉 ぜんぶクリア！ 🎉':'ステージクリア！'}</h2>
     <div class="stars">${'★'.repeat(stars)}<span class="off">${'★'.repeat(3-stars)}</span></div>
     <p>${last?'マリアナ海溝まで ベルーガのおうちを守りきった！<br>きみは 海のヒーローだ！':`${G.st.name}（水深${G.st.depth}）を守りきった！<br>さらに深い海へ…！`}</p>
-    <p><small>たおした数 ${G.kills}　最大コンボ ${G.maxCombo}　のこりライフ ${G.lives}</small></p>
+    <p><small>たおした数 ${G.kills}　最大コンボ ${G.maxCombo}　のこりライフ ${G.lives}　タイム ${Math.round(G.time)}秒</small></p>
+    <p>スコア <b style="font-size:1.7em;color:#e0663a">${G.score.toLocaleString()}</b> ${isBest?'🎉 じぶんのベスト！':''}</p>
+    <div id="rkEntry"><p style="margin-bottom:6px"><small>みんなのランキングに のせよう！（なまえは8文字まで。本名は入れないでね）</small></p><input id="rkName" maxlength="8" placeholder="なまえ" value="${esc(myName)}" autocomplete="off"><button class="bbtn" id="rkBtn" data-act="submit">とうろく</button><div id="rkErr"></div></div><div id="rkList"></div>
     <div class="btns">${last?'':'<button class="bbtn" data-act="next">つぎのステージへ ▶</button>'}<button class="bbtn" data-act="retry" style="background:linear-gradient(#ffb84a,#f07b1d);box-shadow:0 4px 0 #a14c0c">もういちど</button><button class="bbtn" data-act="menu" style="background:linear-gradient(#8fa7bb,#607a91);box-shadow:0 4px 0 #3c4f60">ステージえらび</button></div>`),1700);
 }
 function lose(){
@@ -785,6 +844,7 @@ function selectTower(type){
   G.placing=G.placing===type?null:type;G.sel=null;updBar();
 }
 window.addEventListener('keydown',ev=>{
+  if(ev.target&&ev.target.tagName==='INPUT'){if(ev.key==='Enter')submitScore();return}
   if(!G)return;
   if(ev.key>='1'&&ev.key<='5'){selectTower(TKEYS[+ev.key-1])}
   else if(ev.key==='Escape'){G.placing=null;G.sel=null;updBar()}
@@ -867,14 +927,18 @@ $('msgBox').addEventListener('click',ev=>{
   else if(act==='retry'){newGame(G.si)}
   else if(act==='next'){newGame(Math.min(STAGES.length-1,G.si+1))}
   else if(act==='menu'){showTitle()}
+  else if(act==='submit'){submitScore()}
+  else if(act==='close'){hideOv()}
+  else if(act.startsWith('rk')){showRanking(+act.slice(2))}
 });
+$('rankBtn').onclick=()=>{audio();showRanking(Math.min(STAGES.length-1,Math.max(0,save.unlocked-1)))};
 function showTitle(){
   G=null;hideOv();$('hCards').innerHTML='';
   const list=$('stageList');list.innerHTML='';
   STAGES.forEach((st,i)=>{const b=document.createElement('button');b.className='sbtn';const lock=i>=save.unlocked;b.disabled=lock;
     b.style.background=`linear-gradient(90deg,${st.top},${st.bot})`;if(i<2)b.style.color='#0e3558';
     const s=save.stars[i]||0;
-    b.innerHTML=`<span class="num">${lock?'🔒':i+1}</span><span class="nm">${st.name}<small>水深 ${st.depth}・ラッシュ ${st.waves}回${st.paths.length>1?`・入り口 ${st.paths.length}つ`:''}</small></span><span class="sst">${'★'.repeat(s)}${'☆'.repeat(3-s)}</span>`;
+    b.innerHTML=`<span class="num">${lock?'🔒':i+1}</span><span class="nm">${st.name}<small>水深 ${st.depth}・ラッシュ ${st.waves}回${st.paths.length>1?`・入り口 ${st.paths.length}つ`:''}${save.best[i]?`・ベスト ${save.best[i].toLocaleString()}`:''}</small></span><span class="sst">${'★'.repeat(s)}${'☆'.repeat(3-s)}</span>`;
     b.onclick=()=>{audio();newGame(i)};list.appendChild(b)});
   $('title').classList.add('show');playMusic(0);
 }
@@ -1030,7 +1094,7 @@ function frame(now){
 }
 showTitle();fit();requestAnimationFrame(frame);
 // デバッグ用
-window.__btd={get G(){return G},newGame,update,place,upgrade,startWave,canPlace,choose,CARDS,TOWERS,cost,upCost,tstats};
+if(/[?&]debug=1/.test(location.search))window.__btd={get G(){return G},newGame,update,place,upgrade,startWave,canPlace,choose,CARDS,TOWERS,cost,upCost,tstats};
 </script>
 </body>
 </html>
